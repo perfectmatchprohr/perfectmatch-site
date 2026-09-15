@@ -151,19 +151,37 @@ document.addEventListener("DOMContentLoaded", () => {
     );
     revealEls.forEach((el) => io.observe(el));
 
-    /* Страховка на случай, если наблюдатель не отработал (фоновая вкладка,
-       остановленная отрисовка). Проверяем каждый элемент отдельно: раньше
-       условие смотрело, показался ли хоть один, и не спасало страницу,
-       где часть блоков уже видна, а один застрял невидимым. */
-    const forceReveal = () => revealEls.forEach((el) => el.classList.add("in-view"));
-    setTimeout(() => {
-      revealEls.forEach((el) => {
-        if (el.classList.contains("in-view")) return;
-        const r = el.getBoundingClientRect();
-        if (r.top < window.innerHeight && r.bottom > 0) el.classList.add("in-view");
-      });
-    }, 3000);
-    window.addEventListener("beforeprint", forceReveal);
+    /* Страховка: при резкой прокрутке (флик на мобильном, переход по якорю,
+       восстановление позиции браузером) блок, через который «перескочили»
+       за один кадр, никогда не пересекается с областью наблюдения ни разу —
+       observer для него просто не срабатывает. Раньше страховка смотрела
+       только на то, что видно на экране прямо сейчас (r.bottom > 0), и не
+       замечала как раз такие уже проскроленные мимо блоки — они оставались
+       невидимыми навсегда. Условие «верх элемента уже достиг низа экрана»
+       ловит и их: неважно, ушёл ли блок вверх за пределы окна или ещё виден. */
+    const revealIfDue = (el) => {
+      if (el.classList.contains("in-view")) return;
+      const r = el.getBoundingClientRect();
+      if (r.top < window.innerHeight) el.classList.add("in-view");
+    };
+    let ticking = false;
+    const catchMissed = () => {
+      ticking = false;
+      revealEls.forEach(revealIfDue);
+    };
+    /* setTimeout, а не requestAnimationFrame: rAF не выполняется, пока вкладка
+       в фоне или не отрисовывается (например, свёрнутый на мобильном браузер
+       во время долгой прокрутки), и тогда страховка тоже зависала бы. */
+    const scheduleCatchUp = () => {
+      if (ticking) return;
+      ticking = true;
+      setTimeout(catchMissed, 100);
+    };
+    window.addEventListener("scroll", scheduleCatchUp, { passive: true });
+    window.addEventListener("resize", scheduleCatchUp);
+    setTimeout(catchMissed, 500);
+    setTimeout(catchMissed, 3000);
+    window.addEventListener("beforeprint", () => revealEls.forEach((el) => el.classList.add("in-view")));
   } else {
     revealEls.forEach((el) => el.classList.add("in-view"));
   }
@@ -186,11 +204,17 @@ document.addEventListener("DOMContentLoaded", () => {
     };
 
     if ("IntersectionObserver" in window) {
+      const animated = new Set();
+      const runOnce = (el) => {
+        if (animated.has(el)) return;
+        animated.add(el);
+        animateCounter(el);
+      };
       const cio = new IntersectionObserver(
         (entries) => {
           entries.forEach((entry) => {
             if (entry.isIntersecting) {
-              animateCounter(entry.target);
+              runOnce(entry.target);
               cio.unobserve(entry.target);
             }
           });
@@ -198,6 +222,33 @@ document.addEventListener("DOMContentLoaded", () => {
         { threshold: 0.5 }
       );
       counters.forEach((el) => cio.observe(el));
+
+      /* Та же страховка, что и для .reveal: при резкой прокрутке счётчик
+         может оказаться пройден насквозь за один кадр и ни разу не набрать
+         долю 0.5 для observer — тогда так и остаётся «0 лет в HR» навсегда,
+         именно это потом читают поисковики и ИИ-ассистенты в тексте страницы. */
+      let ticking = false;
+      const catchMissed = () => {
+        ticking = false;
+        counters.forEach((el) => {
+          if (animated.has(el)) return;
+          const r = el.getBoundingClientRect();
+          if (r.top < window.innerHeight) {
+            runOnce(el);
+            cio.unobserve(el);
+          }
+        });
+      };
+      /* setTimeout, а не requestAnimationFrame — см. комментарий у .reveal выше */
+      const scheduleCatchUp = () => {
+        if (ticking) return;
+        ticking = true;
+        setTimeout(catchMissed, 100);
+      };
+      window.addEventListener("scroll", scheduleCatchUp, { passive: true });
+      window.addEventListener("resize", scheduleCatchUp);
+      setTimeout(catchMissed, 500);
+      setTimeout(catchMissed, 3000);
     } else {
       counters.forEach(animateCounter);
     }
